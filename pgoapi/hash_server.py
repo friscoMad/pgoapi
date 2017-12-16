@@ -69,14 +69,15 @@ class HashServer:
             raise MalformedHashResponseException('Unable to parse JSON from hash server.')
 
         headers = response.headers
+        HashServer.log.debug(headers)
         status = {}
+        status['token'] = token
         try:
             status['period'] = int(headers.get('X-RatePeriodEnd', 0))
-            status['remaining'] = int(headers('X-RateRequestsRemaining', 0))
-            status['maximum'] = int(headers('X-MaxRequestCount', 0))
-            status['expiration'] = int(headers('X-AuthTokenExpiration', 0))
-            status['token'] = token
-        except (KeyError, TypeError, ValueError):
+            status['remaining'] = int(headers.get('X-RateRequestsRemaining', 0))
+            status['maximum'] = int(headers.get('X-MaxRequestCount', 0))
+            status['expiration'] = int(headers.get('X-AuthTokenExpiration', 0))
+        except (TypeError, ValueError):
             pass
 
         request_hashes = []
