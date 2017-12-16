@@ -41,6 +41,7 @@ from pycrypt import pycrypt
 from pgoapi.exceptions import AuthTokenExpiredException, BadRequestException, MalformedNianticResponseException, NianticIPBannedException, NianticOfflineException, NianticThrottlingException, NianticTimeoutException, NotLoggedInException, ServerApiEndpointRedirectException, UnexpectedResponseException
 from pgoapi.utilities import to_camel_case, get_time, get_format_time_diff
 from pgoapi.hash_server import HashServer
+from pgoapi.hash_server2 import HashServer2
 
 from . import protos
 from pogoprotos.networking.envelopes.request_envelope_pb2 import RequestEnvelope
@@ -62,8 +63,6 @@ class RpcApi:
 
         self._auth_provider = auth_provider
 
-        # mystical unknown6 - resolved by PokemonGoDev
-        self._hash_engine = None
         self.request_proto = None
 
         if RpcApi.START_TIME == 0:
@@ -76,8 +75,10 @@ class RpcApi:
 
         self.device_info = device_info
 
+        self.auth_token = None
+
     def activate_hash_server(self, auth_token):
-        self._hash_engine = HashServer(auth_token)
+        self.auth_token = auth_token
 
     def get_rpc_id(self):
         if RpcApi.RPC_ID==0 :  #Startup
@@ -146,7 +147,7 @@ class RpcApi:
                 ticket = response_dict['envelope'].auth_ticket
                 if ticket:
                     self.check_authentication(ticket.expire_timestamp_ms, ticket.start, ticket.end)
-                                
+
             if status_code == 102:
                 raise AuthTokenExpiredException
             elif status_code == 52:
@@ -212,11 +213,20 @@ class RpcApi:
         if sig.timestamp_since_start < 5000:
             sig.timestamp_since_start = random.randint(5000, 8000)
 
-        self._hash_engine.hash(sig.timestamp, request.latitude, request.longitude, request.accuracy, ticket_serialized, sig.session_hash, request.requests)
-        sig.location_hash1 = self._hash_engine.get_location_auth_hash()
-        sig.location_hash2 = self._hash_engine.get_location_hash()
-        for req_hash in self._hash_engine.get_request_hashes():
+        result = HashServer.hash(sig.timestamp, request.latitude, request.longitude, request.accuracy, ticket_serialized, sig.session_hash, request.requests, self.auth_token)
+        sig.location_hash1 = result.location_auth_hash
+        sig.location_hash2 = result.location_hash
+        sig.request_hash.extend(result.request_hashes)
+        self.log.debug(sig)
+
+        del sig.request_hash[:]
+        hash_server = HashServer2(self.auth_token)
+        hash_server.hash(sig.timestamp, request.latitude, request.longitude, request.accuracy, ticket_serialized, sig.session_hash, request.requests)
+        sig.location_hash1 = hash_server.get_location_auth_hash()
+        sig.location_hash2 = hash_server.get_location_hash()
+        for req_hash in hash_server.get_request_hashes():
             sig.request_hash.append(ctypes.c_uint64(req_hash).value)
+        self.log.debug(sig)
 
         loc = sig.location_fix.add()
         sen = sig.sensor_info.add()
@@ -287,7 +297,7 @@ class RpcApi:
             plat8 = request.platform_requests.add()
             plat8.type = 8
             plat8.request_message = plat_eight.SerializeToString()
-        
+
         sig_request = SendEncryptedSignatureRequest()
         sig_request.encrypted_signature = pycrypt(signature_proto, sig.timestamp_since_start)
         plat = request.platform_requests.add()
@@ -307,13 +317,13 @@ class RpcApi:
         rtype, _ = requests[0]
         # GetMapObjects or GetPlayer: 50%
         # Encounter: 10%
-        # Others: 3%        
+        # Others: 3%
         if ((rtype in (2, 106) and randval > 0.5)
                 or (rtype == 102 and randval > 0.9)
                 or randval > 0.97):
             return True
         return False
-        
+
     def _build_sub_requests(self, mainrequest, subrequest_list):
         self.log.debug('Generating sub RPC requests...')
 
@@ -353,7 +363,7 @@ class RpcApi:
                 platform.type = entry_id
 
         return mainrequest
-        
+
 
     def _get_proto_bytes(self, path, name, entry_content):
         proto_classname = path + name + '_pb2.' + name
@@ -370,14 +380,14 @@ class RpcApi:
                         r = getattr(proto, key)
                         r.append(i)
                     except Exception as e:
-                        self.log.warning('Argument %s with value %s unknown inside %s (Exception: %s)', key, i, proto_name, e)
+                        self.log.warning('Argument %s with value %s unknown inside %s (Exception: %s)', key, i, proto_classname, e)
             elif isinstance(value, dict):
                 for k in value.keys():
                     try:
                         r = getattr(proto, key)
                         setattr(r, k, value[k])
                     except Exception as e:
-                        self.log.warning('Argument %s with value %s unknown inside %s (Exception: %s)', key, str(value), proto_name, e)
+                        self.log.warning('Argument %s with value %s unknown inside %s (Exception: %s)', key, str(value), proto_classname, e)
             else:
                 try:
                     setattr(proto, key, value)
@@ -387,7 +397,7 @@ class RpcApi:
                         r = getattr(proto, key)
                         r.append(value)
                     except Exception as e:
-                        self.log.warning('Argument %s with value %s unknown inside %s (Exception: %s)', key, value, proto_name, e)
+                        self.log.warning('Argument %s with value %s unknown inside %s (Exception: %s)', key, value, proto_classname, e)
 
         return proto.SerializeToString()
 
@@ -432,9 +442,9 @@ class RpcApi:
 
         if not response_proto_dict:
             raise MalformedNianticResponseException('Could not convert protobuf to dict.')
-            
+
         response_proto_dict = self._parse_sub_responses(response_proto, subrequests, response_proto_dict, use_dict)
-        
+
         #It can't be done before
         if not use_dict:
             del response_proto_dict['envelope'].returns[:]
@@ -462,7 +472,7 @@ class RpcApi:
             subresponse_return = None
             try:
                 subresponse_extension = self.get_class(proto_classname)()
-            except Exception as e:
+            except Exception:
                 subresponse_extension = None
                 error = 'Protobuf definition for {} not found'.format(proto_classname)
                 subresponse_return = error
