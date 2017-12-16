@@ -217,16 +217,6 @@ class RpcApi:
         sig.location_hash1 = result.location_auth_hash
         sig.location_hash2 = result.location_hash
         sig.request_hash.extend(result.request_hashes)
-        self.log.debug(sig)
-
-        del sig.request_hash[:]
-        hash_server = HashServer2(self.auth_token)
-        hash_server.hash(sig.timestamp, request.latitude, request.longitude, request.accuracy, ticket_serialized, sig.session_hash, request.requests)
-        sig.location_hash1 = hash_server.get_location_auth_hash()
-        sig.location_hash2 = hash_server.get_location_hash()
-        for req_hash in hash_server.get_request_hashes():
-            sig.request_hash.append(ctypes.c_uint64(req_hash).value)
-        self.log.debug(sig)
 
         loc = sig.location_fix.add()
         sen = sig.sensor_info.add()

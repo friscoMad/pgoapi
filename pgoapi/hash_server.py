@@ -65,7 +65,6 @@ class HashServer:
 
         try:
             response_parsed = response.json()
-            HashServer.log.debug(response_parsed)
         except ValueError:
             raise MalformedHashResponseException('Unable to parse JSON from hash server.')
 
